@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	url := flag.String("url", os.Args[1], "target url")
+	url := flag.String("url", "http://www.internetradiouk.com/#bbc-radio-world-service", "target url")
 	duration := flag.Duration("duration", 30*time.Minute, "duration of download")
 	flag.Parse()
 
