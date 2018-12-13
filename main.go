@@ -14,8 +14,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/PuerkitoBio/goquery"
 )
 
 func main() {
@@ -41,7 +39,7 @@ func main() {
 		fmt.Fprint(out, "bye...")
 	}()
 
-	downloader := newStreamer(out)
+	downloader := newDownloader(out)
 	f, err := os.Create(fmt.Sprintf("%s.mp3", name))
 	if err != nil {
 		panic(err)
@@ -51,6 +49,8 @@ func main() {
 		panic(err)
 	}
 }
+
+var errStreamNotFound = errors.New("stream URL not found")
 
 type internetRadioUKParser struct {
 	c *http.Client
@@ -70,31 +70,11 @@ func (d *internetRadioUKParser) findStation(url string) (string, error) {
 	if strings.HasPrefix(url, prefix) {
 		return "https://api.webrad.io/data/streams/42/" + url[len(prefix):], nil
 	}
-	// after all, try to find it in link
-	doc, err := goquery.NewDocument(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse given URL %s, err: %v", url, err)
-	}
-	stationURL := ""
-	doc.Find("link").EachWithBreak(func(i int, s *goquery.Selection) bool {
-		l, ok := s.Attr("href")
-		if !ok {
-			return true
-		}
-		if strings.Contains(l, "/streams/") {
-			stationURL = l
-			return false
-		}
-		return true
-	})
-	if stationURL == "" {
-		return "", errStreamNotFound
-	}
-	return stationURL, nil
+
+	return "", errStreamNotFound
 }
 
-// Parse parse the given page and return the streaming URL
-// EX: http://www.internetradiouk.com/#bbc-radio-world-service
+// Parse parse the given page and return the streaming URL with station name
 func (d *internetRadioUKParser) Parse(url string) (name string, stream string, err error) {
 	stationURL, err := d.findStation(url)
 	if err != nil {
@@ -133,24 +113,22 @@ func (d *internetRadioUKParser) Parse(url string) (name string, stream string, e
 
 type logger = io.Writer
 
-var errStreamNotFound = errors.New("stream URL not found")
-
-type myStreamer struct {
+type downloader struct {
 	c   *http.Client
 	log logger
 }
 
-func newStreamer(l logger) *myStreamer {
+func newDownloader(l logger) *downloader {
 	if l == nil {
 		l = os.Stdout
 	}
-	return &myStreamer{
+	return &downloader{
 		c:   &http.Client{},
 		log: l,
 	}
 }
 
-func (d *myStreamer) Download(ctx context.Context, w io.WriteCloser, url string, duration time.Duration) error {
+func (d *downloader) Download(ctx context.Context, w io.Writer, url string, duration time.Duration) error {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -160,13 +138,15 @@ func (d *myStreamer) Download(ctx context.Context, w io.WriteCloser, url string,
 		return err
 	}
 	defer res.Body.Close()
-	lp := newProgressPrinter(d.log)
-	mw := io.MultiWriter(w, lp)
+	pp := newProgressPrinter(d.log)
+	mw := io.MultiWriter(w, pp)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	errChan := make(chan error, 1)
 	ctx, cancel := context.WithCancel(ctx)
+	pp.Start()
+	defer pp.Stop()
 	go func() {
 		defer wg.Done()
 		if _, err := Copy(ctx, mw, res.Body); err != nil && err != context.Canceled {
@@ -182,13 +162,13 @@ func (d *myStreamer) Download(ctx context.Context, w io.WriteCloser, url string,
 		cancel()
 	}
 	wg.Wait()
-	fmt.Fprintf(d.log, "finished downloading...\n")
 	return <-errChan
 }
 
 type progressPrinter struct {
 	writer io.Writer
 	total  int64
+	start  time.Time
 }
 
 func newProgressPrinter(w io.Writer) *progressPrinter {
@@ -197,10 +177,23 @@ func newProgressPrinter(w io.Writer) *progressPrinter {
 	}
 }
 
+func (p *progressPrinter) Start() {
+	p.start = time.Now()
+	fmt.Fprintf(p.writer, "downloading started\n")
+}
+
+func (p *progressPrinter) progressKB() float64 {
+	return float64(p.total) / float64(1024)
+}
+
 func (p *progressPrinter) Write(b []byte) (int, error) {
 	p.total += int64(len(b))
-	fmt.Fprintf(p.writer, "downloaded: %vKB\n", p.total/1024)
+	fmt.Fprintf(p.writer, "downloaded: %.2fKB, time spent: %v\n", p.progressKB(), time.Since(p.start))
 	return len(b), nil
+}
+
+func (p *progressPrinter) Stop() {
+	fmt.Fprintf(p.writer, "downloaded %.2fKB, in %v\n", p.progressKB(), time.Since(p.start))
 }
 
 type readerFunc func(p []byte) (int, error)
