@@ -36,7 +36,7 @@ func main() {
 		signal.Notify(done, syscall.SIGTERM, syscall.SIGINT, os.Kill, os.Interrupt)
 		<-done
 		cancel()
-		fmt.Fprint(out, "bye...")
+		fmt.Fprint(out, "bye...\n")
 	}()
 
 	downloader := newDownloader(out)
